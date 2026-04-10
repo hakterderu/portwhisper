@@ -31,6 +31,9 @@ portwhisper scan example.com --ports 22,80,443,8080 --fingerprint --output resul
 
 # Export as CSV
 portwhisper scan 10.0.0.1 --ports 1-65535 --output results.csv
+
+# Set a custom connection timeout (in seconds)
+portwhisper scan 192.168.1.1 --ports 1-1024 --timeout 2.0
 ```
 
 You can also use it programmatically:
@@ -55,6 +58,7 @@ asyncio.run(main())
 - 🔍 Service fingerprinting on open ports
 - 📄 Export results to JSON or CSV
 - 🎯 Flexible port targeting (ranges, lists, or single ports)
+- ⏱️ Configurable connection timeout per scan
 
 ---
 
