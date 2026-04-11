@@ -1,77 +1,80 @@
-"""Core async port scanner module for portwhisper."""
+"""
+Core async port scanner with service fingerprinting integration.
+"""
 
 import asyncio
 from dataclasses import dataclass, field
 from typing import List, Optional
+
+from portwhisper.ratelimiter import RateLimiter, make_rate_limiter
 
 
 @dataclass
 class ScanResult:
     host: str
     port: int
-    state: str  # 'open' | 'closed' | 'filtered'
-    service: Optional[str] = None
+    open: bool
     banner: Optional[str] = None
-    latency_ms: Optional[float] = None
+    service: Optional[str] = None
 
 
 @dataclass
 class ScanConfig:
     host: str
     ports: List[int]
-    timeout: float = 1.0
-    concurrency: int = 100
-    grab_banner: bool = True
+    timeout: float = 2.0
+    max_concurrent: int = 100
+    rate_limit: Optional[float] = None  # connections per second
+    fingerprint: bool = True
 
 
-async def _probe_port(host: str, port: int, timeout: float, grab_banner: bool) -> ScanResult:
-    """Attempt a TCP connection to host:port and optionally grab a banner."""
-    import time
-
-    start = time.monotonic()
+async def _probe_port(host: str, port: int, timeout: float) -> tuple[bool, Optional[str]]:
+    """Attempt to connect to host:port and optionally grab a banner."""
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port), timeout=timeout
+            asyncio.open_connection(host, port),
+            timeout=timeout,
         )
-        latency_ms = (time.monotonic() - start) * 1000
-
-        banner = None
-        if grab_banner:
-            try:
-                data = await asyncio.wait_for(reader.read(1024), timeout=timeout)
-                banner = data.decode(errors="replace").strip() or None
-            except (asyncio.TimeoutError, ConnectionResetError):
-                pass
-
-        writer.close()
+        banner: Optional[str] = None
         try:
-            await writer.wait_closed()
-        except Exception:
+            data = await asyncio.wait_for(reader.read(1024), timeout=timeout)
+            if data:
+                banner = data.decode(errors="replace").strip()
+        except (asyncio.TimeoutError, ConnectionResetError):
             pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+        return True, banner
+    except (asyncio.TimeoutError, ConnectionRefusedError, OSError):
+        return False, None
 
-        return ScanResult(
-            host=host,
-            port=port,
-            state="open",
-            banner=banner,
-            latency_ms=round(latency_ms, 2),
-        )
-    except (asyncio.TimeoutError, asyncio.CancelledError):
-        return ScanResult(host=host, port=port, state="filtered")
-    except (ConnectionRefusedError, OSError):
-        return ScanResult(host=host, port=port, state="closed")
+
+async def scan_port(host: str, port: int, timeout: float, limiter: RateLimiter) -> ScanResult:
+    """Scan a single port using the provided rate limiter."""
+    async with limiter:
+        is_open, banner = await _probe_port(host, port, timeout)
+    return ScanResult(host=host, port=port, open=is_open, banner=banner)
 
 
 async def run_scan(config: ScanConfig) -> List[ScanResult]:
-    """Run an async port scan according to the provided ScanConfig."""
-    semaphore = asyncio.Semaphore(config.concurrency)
+    """Run a full scan against all configured ports concurrently."""
+    limiter = make_rate_limiter(
+        max_concurrent=config.max_concurrent,
+        rate_limit=config.rate_limit,
+        timeout=config.timeout,
+    )
+    tasks = [
+        scan_port(config.host, port, config.timeout, limiter)
+        for port in config.ports
+    ]
+    results: List[ScanResult] = await asyncio.gather(*tasks)
 
-    async def bounded_probe(port: int) -> ScanResult:
-        async with semaphore:
-            return await _probe_port(
-                config.host, port, config.timeout, config.grab_banner
-            )
+    if config.fingerprint:
+        from portwhisper.fingerprint import annotate_results
+        results = annotate_results(results)
 
-    tasks = [bounded_probe(port) for port in config.ports]
-    results = await asyncio.gather(*tasks)
     return sorted(results, key=lambda r: r.port)
