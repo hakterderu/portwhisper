@@ -38,6 +38,9 @@ def export_json(
 
     Returns:
         JSON string representation.
+
+    Raises:
+        OSError: If the destination path cannot be written to.
     """
     data = results_to_dict(results)
     output = json.dumps(data, indent=indent)
@@ -60,6 +63,9 @@ def export_csv(
 
     Returns:
         CSV string representation.
+
+    Raises:
+        OSError: If the destination path cannot be written to.
     """
     fieldnames = ["host", "port", "open", "service", "banner", "latency_ms"]
     buf = io.StringIO()
@@ -72,3 +78,33 @@ def export_csv(
         Path(destination).write_text(output, encoding="utf-8")
 
     return output
+
+
+def export_open_ports(
+    results: List[ScanResult],
+    destination: Union[str, Path, None] = None,
+    fmt: str = "json",
+) -> str:
+    """Export only open ports from scan results.
+
+    Convenience wrapper around :func:`export_json` and :func:`export_csv` that
+    filters the result list to open ports before exporting.
+
+    Args:
+        results: List of ScanResult objects.
+        destination: Optional file path to write output to.
+        fmt: Output format, either ``"json"`` or ``"csv"``.
+
+    Returns:
+        Serialized string of open-port results in the requested format.
+
+    Raises:
+        ValueError: If *fmt* is not ``"json"`` or ``"csv"``.
+    """
+    open_results = [r for r in results if r.open]
+    if fmt == "json":
+        return export_json(open_results, destination=destination)
+    elif fmt == "csv":
+        return export_csv(open_results, destination=destination)
+    else:
+        raise ValueError(f"Unsupported format {fmt!r}. Choose 'json' or 'csv'.")
